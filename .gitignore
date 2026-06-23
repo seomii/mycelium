@@ -1,0 +1,13 @@
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Large data measurements (so you don't upload gigabytes of raw data)
+*.npy
+*.csv
+*.txt
+
+# macOS system files
+.DS_Store
+
+
