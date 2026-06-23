@@ -38,8 +38,7 @@ def main():
 
     try:
     
-        # configuring wavegen 1 to output a 10Hz square wave with 1V amplitude and 0V offset
-        print("Configuring WaveGen CH1 to output a 10Hz Square Wave...")
+        print("Configuring WaveGen CH1 ")
         channel_out = c_int(0) # 0 = WaveGen CH1
         
         # Enable the generator channel
@@ -48,9 +47,12 @@ def main():
         dwf.FDwfAnalogOutNodeFunctionSet(hdwf, channel_out, AnalogOutNodeCarrier, funcSquare)
         # Set frequency to 10 Hz
         dwf.FDwfAnalogOutNodeFrequencySet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(10.0))
-        # Set amplitude to 2.5 V (Peak-to-Peak will be 2.0V if offset is 0)
+        # Set amplitude to 2.5 V (Peak-to-Peak will be 5.0V if offset is 0)
         dwf.FDwfAnalogOutNodeAmplitudeSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5))
         # Set offset to 2.5V (Swings from 0V to 5V with a 2.5V offset)
+        # The resulting boundaries:
+        # The High Peak = Offset + {Amplitude = 2.5V + 2.5V 
+        # The Low Peak = Offset - Amplitude = 2.5V - 2.5V
         dwf.FDwfAnalogOutNodeOffsetSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5))
         
         # Start the generator hardware
@@ -115,7 +117,7 @@ def main():
         plt.show()
 
     finally:
-        # --- 8. SAFE DISCONNECT ---
+        # SAFE DISCONNECT 
         # This block ALWAYS runs, even if your code crashes halfway through.
         # It ensures your DAQ channels turn off cleanly.
         print("Closing hardware connections safely...")
