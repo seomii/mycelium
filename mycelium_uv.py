@@ -5,7 +5,7 @@ from sys import platform, path
 from os import sep
 from ctypes import *
 
-# 1. Load the Digilent WaveForms SDK
+# Load the Digilent WaveForms SDK
 if platform.startswith("win"):
     dwf = cdll.dwf
     constants_path = "C:" + sep + "Program Files (x86)" + sep + "Digilent" + sep + "WaveFormsSDK" + sep + "samples" + sep + "py"
@@ -31,7 +31,7 @@ def check_error():
 def main():
     hdwf = c_int()
     
-    # 2. Connect to the Analog Discovery Pro
+    # Connect to the Analog Discovery Pro
     print("Opening first available device...")
     dwf.FDwfDeviceOpen(c_int(-1), byref(hdwf))
     if hdwf.value == hdwfNone.value:
@@ -41,15 +41,15 @@ def main():
     print(f"Device opened. Handle: {hdwf.value}")
 
     try:
-        # --- TEST SETTINGS (10 Hz Sampling Rate) ---
+        # --- test settings ---
         hzAcq = 10.0              # 10 measurements per second
-        record_time = 30.0        # Record for 30 seconds total
-        nSamples = int(hzAcq * record_time)  # Total of 300 samples
+        record_time = 300.0        # Record for 300 seconds total
+        nSamples = int(hzAcq * record_time)  # Total of 3000 samples
         
         pulse_frequency = 0.05    # Very slow wave (1 full cycle takes 20 seconds)
         pulse_duration = 10.0     # Turn the UV light ON for exactly 10 seconds
         
-        # --- CONFIGURE ANALOG OUT (The UV Light Pulse) ---
+        # --- configure the Analog Out channel to generate a slow square wave pulse for UV excitation ---
         print("Configuring UV Pulse (Analog Out CH1)...")
         channel_out = c_int(0) 
         dwf.FDwfAnalogOutNodeEnableSet(hdwf, channel_out, AnalogOutNodeCarrier, c_int(1))
@@ -58,15 +58,15 @@ def main():
         dwf.FDwfAnalogOutNodeAmplitudeSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5)) 
         dwf.FDwfAnalogOutNodeOffsetSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5))    
         dwf.FDwfAnalogOutRunSet(hdwf, channel_out, c_double(pulse_duration)) # Runs for 10 seconds
-        dwf.FDwfAnalogOutRepeatSet(hdwf, channel_out, c_int(1))              # Fires only once
+        dwf.FDwfAnalogOutRepeatSet(hdwf, channel_out, c_int(1))              # UV pulse only once (10 seconds ON then OFF until 300 seconds total)
         
-        # --- CONFIGURE ANALOG IN (The Recording Scope) ---
+        # --- configure the Analog In channels to record the UV pulse and mycelium response ---
         print("Configuring Recording (Analog In CH1 & CH2)...")
-        # Enable CH1 (Verify Pulse) and CH2 (Electrode Data)
+        # CH1 (Verify Pulse) and CH2 (Electrode Data)
         dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(0), c_int(1)) # CH1
         dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(1), c_int(1)) # CH2
         
-        # Set ranges (e.g., 5V range to easily capture the UV pulse and small electrode signals)
+        # Set ranges (5V range to easily capture the UV pulse and small electrode signals)
         dwf.FDwfAnalogInChannelRangeSet(hdwf, c_int(0), c_double(5.0))
         dwf.FDwfAnalogInChannelRangeSet(hdwf, c_int(1), c_double(5.0))
         
@@ -81,12 +81,12 @@ def main():
         
         time.sleep(2) # Give the DAQ circuits a moment to stabilize
 
-        # --- EXECUTE TEST ---
+        # --- Test execution---
         print("Starting Acquisition and firing UV Pulse...")
         dwf.FDwfAnalogInConfigure(hdwf, c_int(1), c_int(1))    # Start the Scope (it will wait for the trigger)
         dwf.FDwfAnalogOutConfigure(hdwf, channel_out, c_int(1)) # Fire the Pulse (this triggers the scope)
 
-        # --- WAIT FOR DATA ---
+        # --- Waiting for data ---
         status = c_byte()
         while True:
             dwf.FDwfAnalogInStatus(hdwf, c_int(1), byref(status))
@@ -96,7 +96,7 @@ def main():
 
         print("Acquisition complete. Downloading data...")
 
-        # --- RETRIEVE DATA ---
+        # --- retrieving data ---
         rgdSamples1 = (c_double * nSamples)() # Buffer for CH1 (Pulse verification)
         rgdSamples2 = (c_double * nSamples)() # Buffer for CH2 (Electrode response)
         
@@ -106,12 +106,12 @@ def main():
         data_ch1 = np.array(rgdSamples1)
         data_ch2 = np.array(rgdSamples2)
 
-        # --- SAVE DATA ---
+        # --- saving data---
         print("Saving data to disk...")
         np.save("uv_pulse_verification.npy", data_ch1)
         np.save("mycelium_electrode_response.npy", data_ch2)
 
-        # --- PLOT DATA ---
+        # --- plotting data ---
         time_axis = np.linspace(0, record_time, nSamples)
         plt.figure(figsize=(10, 6))
         plt.plot(time_axis, data_ch1, label="UV Light Pulse (CH1)", color='orange')
@@ -124,7 +124,7 @@ def main():
         plt.show()
 
     finally:
-        # 3. Always close the device safely
+        # Always close the device safely!!!!
         print("Closing device...")
         dwf.FDwfDeviceCloseAll()
 
