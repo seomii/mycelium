@@ -18,6 +18,7 @@ else:
     constants_path = sep + "usr" + sep + "share" + sep + "digilent" + sep + "waveforms" + sep + "samples" + sep + "py"
 
 path.append(constants_path)
+
 from dwfconstants import *
 
 def check_error():
@@ -40,25 +41,25 @@ def main():
     print(f"Device opened. Handle: {hdwf.value}")
 
     try:
-        # --- TEST SETTINGS ---
-        hzAcq = 100000.0          # 100 kHz sample rate
-        record_time = 2.0         # Record for 2 seconds
-        nSamples = int(hzAcq * record_time)
+        # --- TEST SETTINGS (10 Hz Sampling Rate) ---
+        hzAcq = 10.0              # 10 measurements per second
+        record_time = 30.0        # Record for 30 seconds total
+        nSamples = int(hzAcq * record_time)  # Total of 300 samples
         
-        pulse_frequency = 1.0     # 1 Hz square wave
-        pulse_duration = 0.5      # Run the pulse for 0.5 seconds
+        pulse_frequency = 0.05    # Very slow wave (1 full cycle takes 20 seconds)
+        pulse_duration = 10.0     # Turn the UV light ON for exactly 10 seconds
         
         # --- CONFIGURE ANALOG OUT (The UV Light Pulse) ---
         print("Configuring UV Pulse (Analog Out CH1)...")
-        channel_out = c_int(0) # 0 = CH1
+        channel_out = c_int(0) 
         dwf.FDwfAnalogOutNodeEnableSet(hdwf, channel_out, AnalogOutNodeCarrier, c_int(1))
         dwf.FDwfAnalogOutNodeFunctionSet(hdwf, channel_out, AnalogOutNodeCarrier, funcSquare)
         dwf.FDwfAnalogOutNodeFrequencySet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(pulse_frequency))
-        dwf.FDwfAnalogOutNodeAmplitudeSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5)) # 2.5V Amplitude
-        dwf.FDwfAnalogOutNodeOffsetSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5))    # 2.5V Offset = 0V to 5V pulse
-        dwf.FDwfAnalogOutRunSet(hdwf, channel_out, c_double(pulse_duration)) # Run for a specific duration
-        dwf.FDwfAnalogOutRepeatSet(hdwf, channel_out, c_int(1))              # Only send the pulse once
-
+        dwf.FDwfAnalogOutNodeAmplitudeSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5)) 
+        dwf.FDwfAnalogOutNodeOffsetSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(2.5))    
+        dwf.FDwfAnalogOutRunSet(hdwf, channel_out, c_double(pulse_duration)) # Runs for 10 seconds
+        dwf.FDwfAnalogOutRepeatSet(hdwf, channel_out, c_int(1))              # Fires only once
+        
         # --- CONFIGURE ANALOG IN (The Recording Scope) ---
         print("Configuring Recording (Analog In CH1 & CH2)...")
         # Enable CH1 (Verify Pulse) and CH2 (Electrode Data)
