@@ -32,7 +32,8 @@ The system uses a **Digilent Analog Discovery Pro (ADP)** to send precise digita
 
 ![alt text](IMG_6428.jpeg)
 
-![alt text](IMG_6426.jpeg)
+
+![alt text](IMG_7040.jpeg)
 
 
 ## Software & Script Logic

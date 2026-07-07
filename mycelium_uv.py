@@ -1,289 +1,414 @@
 '''
 import time
+import sys
+from ctypes import *
 import numpy as np
 import matplotlib.pyplot as plt
-from sys import platform, path
-from os import sep
-from ctypes import *
 
-# Load the Digilent WaveForms SDK
-if platform.startswith("win"):
+# --- Load WaveForms DLL ---
+if sys.platform.startswith("win"):
     dwf = cdll.dwf
-    constants_path = "C:" + sep + "Program Files (x86)" + sep + "Digilent" + sep + "WaveFormsSDK" + sep + "samples" + sep + "py"
-elif platform.startswith("darwin"):
-    lib_path = sep + "Library" + sep + "Frameworks" + sep + "dwf.framework" + sep + "dwf"
-    dwf = cdll.LoadLibrary(lib_path)
-    constants_path = sep + "Applications" + sep + "WaveForms.app" + sep + "Contents" + sep + "Resources" + sep + "SDK" + sep + "samples" + sep + "py"
+elif sys.platform.startswith("darwin"):
+    dwf = cdll.LoadLibrary("/Library/Frameworks/dwf.framework/dwf")
 else:
     dwf = cdll.LoadLibrary("libdwf.so")
-    constants_path = sep + "usr" + sep + "share" + sep + "digilent" + sep + "waveforms" + sep + "samples" + sep + "py"
 
-path.append(constants_path)
+# --- Configuration ---
+UV_ON_DURATION_SEC  = 10.0
+TOTAL_DURATION_SEC  = 20.0
+SAMPLE_RATE_HZ      = 1000.0   # 1 kHz — adjust if needed
+VOLTAGE_RANGE_V     = 5.0      # ±5V oscilloscope range; lower for small signals
+DIO_PIN_MASK        = c_uint(1 << 0)   # DIO pin 0
+DIO_ALL_LOW         = c_uint(0)
 
-from dwfconstants import *
+# WaveForms SDK constants
+ACQTYPE_RECORD  = c_int(3)
+DWF_STATE_DONE  = c_ubyte(2)
 
-def check_error():
-    err_msg = create_string_buffer(512)
-    dwf.FDwfGetLastErrorMsg(err_msg)
-    err_msg = err_msg.value.decode("ascii")
-    if err_msg != "":
-        raise Exception(f"DWF Error: {err_msg}")
+# ─────────────────────────────────────────────
+# UV helpers — direct DIO control, no relay
+# ─────────────────────────────────────────────
+def uv_on(dwf, hdwf):
+    """DIO 0 HIGH → current flows through UV light → ON."""
+    dwf.FDwfDigitalIOOutputSet(hdwf, c_uint(1 << 0))
+    dwf.FDwfDigitalIOConfigure(hdwf)
 
-def main():
+def uv_off(dwf, hdwf):
+    """DIO 0 LOW → no current → UV OFF."""
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_ALL_LOW)
+    dwf.FDwfDigitalIOConfigure(hdwf)
+
+# ─────────────────────────────────────────────
+# Device init
+# ─────────────────────────────────────────────
+def initialize_device(dwf):
     hdwf = c_int()
-    
-    # Connect to the Analog Discovery Pro
-    print("Opening first available device...")
+    print("Opening Digilent Analog Discovery Pro...")
     dwf.FDwfDeviceOpen(c_int(-1), byref(hdwf))
-    if hdwf.value == hdwfNone.value:
-        check_error()
-        return
+    if hdwf.value == 0:
+        szerr = create_string_buffer(512)
+        dwf.FDwfGetLastErrorMsg(szerr)
+        print(f"Error: {szerr.value.decode()}")
+        sys.exit(1)
+    print(f"Device opened (handle: {hdwf.value})")
+    return hdwf
 
-    print(f"Device opened. Handle: {hdwf.value}")
+# ─────────────────────────────────────────────
+# DIO config — just set pin 0 as output
+# ─────────────────────────────────────────────
+def configure_dio(dwf, hdwf):
+    dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK)  # pin 0 = output
+    uv_off(dwf, hdwf)                                      # safe initial state
+    print("DIO 0 configured as output. UV OFF.")
 
-    try:
-        # --- test settings ---
-        hzAcq = 10.0              # 10 measurements per second
-        record_time = 120.0        # Record for 120 seconds total
-        nSamples = int(hzAcq * record_time)  # Total of 1200 samples
-        
-        pulse_frequency = 0.05    # Very slow wave (1 full cycle takes 20 seconds)
-        pulse_duration = 10.0     # Turn the UV light ON for exactly 10 seconds
-        
-        # --- configure the Analog Out channel to generate a solid DC voltage for UV excitation ---
-        print("Configuring UV Pulse (Analog Out CH1 as a DC Trigger)...")
-        channel_out = c_int(0) 
-        dwf.FDwfAnalogOutNodeEnableSet(hdwf, channel_out, AnalogOutNodeCarrier, c_int(1))
-        
-        # FIX 1: Change funcSquare to funcDC for a steady, constant voltage
-        dwf.FDwfAnalogOutNodeFunctionSet(hdwf, channel_out, AnalogOutNodeCarrier, funcDC)
-        
-        # FIX 2: Set the Offset to 5.0V. In DC mode, Offset dictates the final output voltage.
-        dwf.FDwfAnalogOutNodeOffsetSet(hdwf, channel_out, AnalogOutNodeCarrier, c_double(5.0))    
-        
-        # Keep these the same: Run for 10 seconds, then stop automatically
-        dwf.FDwfAnalogOutRunSet(hdwf, channel_out, c_double(pulse_duration)) 
-        dwf.FDwfAnalogOutRepeatSet(hdwf, channel_out, c_int(1))            # UV pulse only once (10 seconds ON then OFF until 300 seconds total)
-        
-        # --- configure the Analog In channels to record the UV pulse and mycelium response ---
-        print("Configuring Recording (Analog In CH1 & CH2)...")
-        dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(0), c_int(1)) # CH1
-        dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(1), c_int(1)) # CH2
-        
-        dwf.FDwfAnalogInChannelRangeSet(hdwf, c_int(0), c_double(5.0))
-        dwf.FDwfAnalogInChannelRangeSet(hdwf, c_int(1), c_double(5.0))
-        
-        dwf.FDwfAnalogInAcquisitionModeSet(hdwf, acqmodeSingle)
-        dwf.FDwfAnalogInFrequencySet(hdwf, c_double(hzAcq))
-        dwf.FDwfAnalogInBufferSizeSet(hdwf, c_int(nSamples))
-        
-        # FIX: Remove the physical hardware trigger mapping to prevent deadlocks.
-        # Instead, we will use a software-driven start command.
-        dwf.FDwfAnalogInTriggerSourceSet(hdwf, trigsrcNone) 
-        
-        time.sleep(2) # Give the DAQ circuits a moment to stabilize
+# ─────────────────────────────────────────────
+# Oscilloscope config — Channel 1 = mycelium
+# ─────────────────────────────────────────────
+def configure_oscilloscope(dwf, hdwf):
+    total_samples = int(TOTAL_DURATION_SEC * SAMPLE_RATE_HZ)
 
-        # --- Test execution ---
-        print("Starting Acquisition and firing UV Pulse simultaneously...")
-        
-        # We start both the reader and the writer at the exact same moment in software
-        dwf.FDwfAnalogInConfigure(hdwf, c_int(1), c_int(1))    # Start the Scope recording
-        dwf.FDwfAnalogOutConfigure(hdwf, channel_out, c_int(1)) # Fire the UV Pulse
+    dwf.FDwfAnalogInChannelEnableSet(hdwf,  c_int(0), c_int(1))               # enable Ch1
+    dwf.FDwfAnalogInChannelRangeSet(hdwf,   c_int(0), c_double(VOLTAGE_RANGE_V))
+    dwf.FDwfAnalogInChannelOffsetSet(hdwf,  c_int(0), c_double(0.0))
+    dwf.FDwfAnalogInFrequencySet(hdwf,      c_double(SAMPLE_RATE_HZ))
+    dwf.FDwfAnalogInAcquisitionModeSet(hdwf, ACQTYPE_RECORD)
+    dwf.FDwfAnalogInRecordLengthSet(hdwf,   c_double(TOTAL_DURATION_SEC))
 
-        # --- Waiting for data ---
-        status = c_byte()
-        print("Recording in progress... Please wait 2 minutes.") # Updated text
-        start_wait = time.time()
-        
-        while True:
-            dwf.FDwfAnalogInStatus(hdwf, c_int(1), byref(status))
-            if status.value == DwfStateDone.value:
-                break
-            
-            # Print a progress update every 10 seconds so you know it hasn't crashed
-            elapsed = time.time() - start_wait
-            if int(elapsed) % 10 == 0:
-                # Updated to dynamically show the actual record_time variable (120)
-                print(f"Elapsed recording time: {int(elapsed)} / {int(record_time)} seconds...", end="\r")
-                
-            time.sleep(1.0)
+    print(f"Oscilloscope: {SAMPLE_RATE_HZ:.0f} Hz | ±{VOLTAGE_RANGE_V}V | {TOTAL_DURATION_SEC:.0f}s")
+    return total_samples
 
-        # --- retrieving data  ---
-        rgdSamples1 = (c_double * nSamples)() 
-        rgdSamples2 = (c_double * nSamples)() 
-        
-        # Now reading Mycelium from CH1 (index 0) and UV Pulse from CH2 (index 1)
-        dwf.FDwfAnalogInStatusData(hdwf, c_int(0), rgdSamples1, nSamples) # CH1 is Mycelium
-        dwf.FDwfAnalogInStatusData(hdwf, c_int(1), rgdSamples2, nSamples) # CH2 is UV Pulse
+# ─────────────────────────────────────────────
+# Main loop — UV trigger + data acquisition
+# ─────────────────────────────────────────────
+def run_experiment(dwf, hdwf, total_samples):
+    all_samples = []
+    uv_off_done = False
+    available   = c_int()
+    lost        = c_int()
+    corrupt     = c_int()
+    sts         = c_ubyte()
 
-        data_mycelium = np.array(rgdSamples1)
-        data_uv_pulse = np.array(rgdSamples2)
+    # Arm oscilloscope
+    dwf.FDwfAnalogInConfigure(hdwf, c_int(0), c_int(1))
+    time.sleep(0.2)  # let it settle before triggering UV
 
-        # --- saving data ---
-        print("Saving data to disk...")
-        np.save("mycelium_electrode_response.npy", data_mycelium)
-        np.save("uv_pulse_verification.npy", data_uv_pulse)
+    # Always explicitly start UV ON
+    uv_on(dwf, hdwf)
+    t_start = time.time()
+    print("UV ON  → t = 0.0s")
+    print(f"Recording for {TOTAL_DURATION_SEC:.0f}s total...\n")
 
-        # --- plotting data ---
-        time_axis = np.linspace(0, record_time, nSamples)
-        plt.figure(figsize=(10, 6))
-        plt.plot(time_axis, data_uv_pulse, label="UV Light Pulse (CH2)", color='orange')
-        plt.plot(time_axis, data_mycelium, label="Mycelium Response (CH1)", color='green')
-        plt.xlabel("Time (s)")
-        plt.ylabel("Voltage (V)")
-        plt.title("Mycelium UV Excitation Response")
-        plt.legend()
-        plt.grid(True)
-        plt.show()
+    # --- BEFORE THE LOOP (Initial Safe State) ---
+    # With a pull-up resistor, driving HIGH or letting it float (Z) keeps it OFF
+    dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK)
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_PIN_MASK) # 3.3V = OFF
+    dwf.FDwfDigitalIOConfigure(hdwf)
 
-    finally:
-        # Always close the device safely!!!!
-        print("Closing device...")
-        dwf.FDwfDeviceCloseAll()
+    # --- START EXPERIMENT (UV ON) ---
+    # Drive the pin to Ground (0V) to turn the active-low circuit ON
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_ALL_LOW)  # 0V = ON
+    dwf.FDwfDigitalIOConfigure(hdwf)
+    t_start = time.time()
 
-if __name__ == "__main__":
-    main()
-    '''
+    while True:
+        elapsed = time.time() - t_start  
+
+        # ── UV OFF at exactly 10s ──
+        if not uv_off_done and elapsed >= UV_ON_DURATION_SEC:
+            # Drive it HIGH to turn it off, matching the pull-up resistor
+            dwf.FDwfDigitalIOOutputSet(hdwf, DIO_PIN_MASK) # 3.3V = OFF
+            dwf.FDwfDigitalIOConfigure(hdwf)
+            uv_off_done = True
+
+        # ── Poll oscilloscope ──
+        dwf.FDwfAnalogInStatus(hdwf, c_int(1), byref(sts))
+        dwf.FDwfAnalogInStatusRecord(hdwf, byref(available), byref(lost), byref(corrupt))
+
+        if lost.value > 0:
+            print(f"\n  WARNING: {lost.value} samples lost.")
+        if corrupt.value > 0:
+            print(f"\n  WARNING: {corrupt.value} samples corrupted.")
+
+        if available.value > 0:
+            chunk = (c_double * available.value)()
+            dwf.FDwfAnalogInStatusData(hdwf, c_int(0), chunk, c_int(available.value))
+            all_samples.extend(chunk)
+
+        print(f"  t={elapsed:6.1f}s | samples={len(all_samples):7d}/{total_samples} "
+              f"| UV={'ON ' if not uv_off_done else 'OFF'}", end="\r")
+
+        # ── Exit based on wall clock, NOT oscilloscope status ──
+        # (sts == DONE can fire immediately and break the loop too early)
+        if elapsed >= TOTAL_DURATION_SEC:
+            break
+
+        time.sleep(0.02)
+
+    print(f"\nDone. {len(all_samples)} samples collected.")
+    return np.array(all_samples)
+
+# ─────────────────────────────────────────────
+# Plot
+# ─────────────────────────────────────────────
+def plot_results(samples):
+    time_axis = np.arange(len(samples)) / SAMPLE_RATE_HZ
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    # Shade UV ON window
+    ax.axvspan(0, UV_ON_DURATION_SEC, color='violet', alpha=0.15,
+               label=f'UV ON (0 – {UV_ON_DURATION_SEC:.0f}s)')
+    ax.axvline(UV_ON_DURATION_SEC, color='purple', linestyle='--',
+               linewidth=1.2, label='UV OFF')
+
+    ax.plot(time_axis, samples, color='steelblue', linewidth=0.5,
+            label='Ch1 — Mycelium voltage')
+
+    ax.set_xlabel('Time (s)', fontsize=12)
+    ax.set_ylabel('Voltage (V)', fontsize=12)
+    ax.set_title('Mycelium Electrophysiology — UV Stimulus Response', fontsize=14)
+    ax.set_xlim(0, TOTAL_DURATION_SEC)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig('mycelium_uv_response.png', dpi=150)
+    print("Plot saved → mycelium_uv_response.png")
+    plt.show()
+
+# ─────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────
+hdwf = initialize_device(dwf)
+
+try:
+    configure_dio(dwf, hdwf)
+    total_samples = configure_oscilloscope(dwf, hdwf)
+    samples = run_experiment(dwf, hdwf, total_samples)
+    plot_results(samples)
+
+except KeyboardInterrupt:
+    print("\nInterrupted by user.")
+
+finally:
+    print("\nSafety teardown...")
+    uv_off(dwf, hdwf)
+    dwf.FDwfAnalogInConfigure(hdwf, c_int(0), c_int(0))  # stop oscilloscope
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_ALL_LOW)
+    dwf.FDwfDigitalIOConfigure(hdwf)
+    dwf.FDwfDeviceClose(hdwf)
+    print("Device closed safely.")
+
+'''
 
 import time
+import sys
+from ctypes import *
 import numpy as np
 import matplotlib.pyplot as plt
-from sys import platform, path
-from os import sep
-from ctypes import *
 
-# Load the Digilent WaveForms SDK
-if platform.startswith("win"):
+# --- Load WaveForms DLL ---
+if sys.platform.startswith("win"):
     dwf = cdll.dwf
-    constants_path = "C:" + sep + "Program Files (x86)" + sep + "Digilent" + sep + "WaveFormsSDK" + sep + "samples" + sep + "py"
-elif platform.startswith("darwin"):
-    lib_path = sep + "Library" + sep + "Frameworks" + sep + "dwf.framework" + sep + "dwf"
-    dwf = cdll.LoadLibrary(lib_path)
-    constants_path = sep + "Applications" + sep + "WaveForms.app" + sep + "Contents" + sep + "Resources" + sep + "SDK" + sep + "samples" + sep + "py"
+elif sys.platform.startswith("darwin"):
+    dwf = cdll.LoadLibrary("/Library/Frameworks/dwf.framework/dwf")
 else:
     dwf = cdll.LoadLibrary("libdwf.so")
-    constants_path = sep + "usr" + sep + "share" + sep + "digilent" + sep + "waveforms" + sep + "samples" + sep + "py"
 
-path.append(constants_path)
+# --- Configuration ---
+UV_ON_DURATION_SEC  = 10.0
+TOTAL_DURATION_SEC  = 20.0
+SAMPLE_RATE_HZ      = 1000.0   # 1 kHz — adjust if needed
+VOLTAGE_RANGE_V     = 5.0      # ±5V oscilloscope range; lower for small signals
+DIO_PIN_MASK        = c_uint(1 << 0)   # DIO pin 0
+DIO_ALL_LOW         = c_uint(0)
 
-from dwfconstants import *
+# WaveForms SDK constants
+ACQTYPE_RECORD  = c_int(3)
+DWF_STATE_DONE  = c_ubyte(2)
 
-def check_error():
-    err_msg = create_string_buffer(512)
-    dwf.FDwfGetLastErrorMsg(err_msg)
-    err_msg = err_msg.value.decode("ascii")
-    if err_msg != "":
-        raise Exception(f"DWF Error: {err_msg}")
+# ─────────────────────────────────────────────
+# UV helpers — direct DIO control, no relay
+# ─────────────────────────────────────────────
+def uv_on(dwf, hdwf):
+    """
+    UV ON -> Mimics 'Disconnected' (Air Gap).
+    Disables output AND forces internal hardware resistors to float (0.5).
+    """
+    dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_ALL_LOW)  
+    # 0.0 = Pull Down, 1.0 = Pull Up, 0.5 = Float
+    if hasattr(dwf, 'FDwfDigitalIOPullSet'):
+        dwf.FDwfDigitalIOPullSet(hdwf, DIO_PIN_MASK, c_double(0.5))
+    dwf.FDwfDigitalIOConfigure(hdwf)
 
-def main():
+def uv_off(dwf, hdwf):
+    """
+    UV OFF -> Mimics 'Pressed (1)'.
+    Drives the pin HIGH (3.3V).
+    """
+    if hasattr(dwf, 'FDwfDigitalIOPullSet'):
+        dwf.FDwfDigitalIOPullSet(hdwf, DIO_PIN_MASK, c_double(1.0)) # Pull up to help drive
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_PIN_MASK)       
+    dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK) 
+    dwf.FDwfDigitalIOConfigure(hdwf)
+
+# ─────────────────────────────────────────────
+# Device init
+# ─────────────────────────────────────────────
+def initialize_device(dwf):
     hdwf = c_int()
-    
-    print("Opening first available device...")
+    print("Opening Digilent Analog Discovery Pro...")
     dwf.FDwfDeviceOpen(c_int(-1), byref(hdwf))
-    if hdwf.value == hdwfNone.value:
-        check_error()
-        return
+    if hdwf.value == 0:
+        szerr = create_string_buffer(512)
+        dwf.FDwfGetLastErrorMsg(szerr)
+        print(f"Error: {szerr.value.decode()}")
+        sys.exit(1)
+    print(f"Device opened (handle: {hdwf.value})")
+    return hdwf
 
-    print(f"Device opened. Handle: {hdwf.value}")
+# ─────────────────────────────────────────────
+# DIO config — just set pin 0 as output
+# ─────────────────────────────────────────────
+def configure_dio(dwf, hdwf):
+    dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK)  # pin 0 = output
+    uv_off(dwf, hdwf)                                      # safe initial state
+    print("DIO 0 configured as output. UV OFF.")
 
-    try:
-        # --- test settings ---
-        hzAcq = 10.0              
-        record_time = 120.0        
-        nSamples = int(hzAcq * record_time)  
-        pulse_duration = 10.0     # Keep UV light ON for exactly 10 seconds
-        
-        # --- CONFIGURE DIGITAL I/O PIN 0 (DIO 0) FOR UV TRIGGER ---
-        print("Configuring Digital I/O Pin 0 (DIO 0)...")
-        # Enable output mask for pin 0 (1 << 0 = 1)
-        dwf.FDwfDigitalIOOutputEnableSet(hdwf, c_uint(1)) 
-        # Set initial state to LOW (0V) so it starts turned OFF
-        dwf.FDwfDigitalIOOutputSet(hdwf, c_uint(0)) 
-        
-        # --- configure the Analog In channels to record ---
-        print("Configuring Recording (Analog In CH1 & CH2)...")
-        dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(0), c_int(1)) # CH1 is Mycelium
-        dwf.FDwfAnalogInChannelEnableSet(hdwf, c_int(1), c_int(1)) # CH2 is UV Loopback
-        
-        dwf.FDwfAnalogInChannelRangeSet(hdwf, c_int(0), c_double(5.0))
-        dwf.FDwfAnalogInChannelRangeSet(hdwf, c_int(1), c_double(5.0))
-        
-        dwf.FDwfAnalogInAcquisitionModeSet(hdwf, acqmodeSingle)
-        dwf.FDwfAnalogInFrequencySet(hdwf, c_double(hzAcq))
-        dwf.FDwfAnalogInBufferSizeSet(hdwf, c_int(nSamples))
-        dwf.FDwfAnalogInTriggerSourceSet(hdwf, trigsrcNone) 
-        
-        time.sleep(2) 
+# ─────────────────────────────────────────────
+# Oscilloscope config — Channel 1 = mycelium
+# ─────────────────────────────────────────────
+def configure_oscilloscope(dwf, hdwf):
+    total_samples = int(TOTAL_DURATION_SEC * SAMPLE_RATE_HZ)
 
-        # --- Test execution ---
-        print("Starting Acquisition and flipping DIO 0 HIGH (3.3V/5V)...")
-        
-        # 1. Start the oscilloscope recording
-        dwf.FDwfAnalogInConfigure(hdwf, c_int(1), c_int(1))    
-        
-        # 2. Turn DIO 0 ON instantly (binary bitmask 1 means bit 0 is HIGH)
-        dwf.FDwfDigitalIOOutputSet(hdwf, c_uint(1)) 
-        dwf.FDwfDigitalIOConfigure(hdwf)
+    dwf.FDwfAnalogInChannelEnableSet(hdwf,  c_int(0), c_int(1))               # enable Ch1
+    dwf.FDwfAnalogInChannelRangeSet(hdwf,   c_int(0), c_double(VOLTAGE_RANGE_V))
+    dwf.FDwfAnalogInChannelOffsetSet(hdwf,  c_int(0), c_double(0.0))
+    dwf.FDwfAnalogInFrequencySet(hdwf,      c_double(SAMPLE_RATE_HZ))
+    dwf.FDwfAnalogInAcquisitionModeSet(hdwf, ACQTYPE_RECORD)
+    dwf.FDwfAnalogInRecordLengthSet(hdwf,   c_double(TOTAL_DURATION_SEC))
 
-        # --- Waiting for data ---
-        status = c_byte()
-        print("Recording in progress... Please wait 2 minutes.") 
-        start_wait = time.time()
-        pulse_turned_off = False
-        
-        while True:
-            dwf.FDwfAnalogInStatus(hdwf, c_int(1), byref(status))
-            if status.value == DwfStateDone.value:
-                break
-            
-            elapsed = time.time() - start_wait
-            
-            # TIMING CONTROL: Check if 10 seconds have passed to shut off the UV light
-            if elapsed >= pulse_duration and not pulse_turned_off:
-                print("\n10 seconds passed. Flipping DIO 0 LOW (0V)...")
-                dwf.FDwfDigitalIOOutputSet(hdwf, c_uint(0)) # Set all pins back to 0 (LOW)
-                dwf.FDwfDigitalIOConfigure(hdwf)
-                pulse_turned_off = True
+    print(f"Oscilloscope: {SAMPLE_RATE_HZ:.0f} Hz | ±{VOLTAGE_RANGE_V}V | {TOTAL_DURATION_SEC:.0f}s")
+    return total_samples
 
-            if int(elapsed) % 10 == 0:
-                print(f"Elapsed recording time: {int(elapsed)} / {int(record_time)} seconds...", end="\r")
-                
-            time.sleep(0.5) # Kept a bit tighter to catch the 10-second mark accurately
+# ─────────────────────────────────────────────
+# Main loop — UV trigger + data acquisition
+# ─────────────────────────────────────────────
+def run_experiment(dwf, hdwf, total_samples):
+    all_samples = []
+    uv_off_done = False
+    available   = c_int()
+    lost        = c_int()
+    corrupt     = c_int()
+    sts         = c_ubyte()
 
-        # --- retrieving data  ---
-        print("\nAcquisition complete. Downloading data...")
-        rgdSamples1 = (c_double * nSamples)() 
-        rgdSamples2 = (c_double * nSamples)() 
-        
-        dwf.FDwfAnalogInStatusData(hdwf, c_int(0), rgdSamples1, nSamples) 
-        dwf.FDwfAnalogInStatusData(hdwf, c_int(1), rgdSamples2, nSamples) 
+    # Arm oscilloscope
+    dwf.FDwfAnalogInConfigure(hdwf, c_int(0), c_int(1))
+    time.sleep(0.2)  # let it settle before triggering UV
 
-        data_mycelium = np.array(rgdSamples1)
-        data_uv_pulse = np.array(rgdSamples2)
+    # Always explicitly start UV ON
+    uv_on(dwf, hdwf)
+    t_start = time.time()
+    print("UV ON  → t = 0.0s")
+    print(f"Recording for {TOTAL_DURATION_SEC:.0f}s total...\n")
 
-        # --- saving data ---
-        print("Saving data to disk...")
-        np.save("mycelium_electrode_response.npy", data_mycelium)
-        np.save("uv_pulse_verification.npy", data_uv_pulse)
+    # --- BEFORE THE LOOP (Initial Safe State) ---
+    # With a pull-up resistor, driving HIGH or letting it float (Z) keeps it OFF
+    dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK)
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_PIN_MASK) # 3.3V = OFF
+    dwf.FDwfDigitalIOConfigure(hdwf)
 
-        # --- plotting data ---
-        time_axis = np.linspace(0, record_time, nSamples)
-        plt.figure(figsize=(10, 6))
-        plt.plot(time_axis, data_uv_pulse, label="UV Light Pulse (CH2)", color='orange')
-        plt.plot(time_axis, data_mycelium, label="Mycelium Response (CH1)", color='green')
-        plt.xlabel("Time (s)")
-        plt.ylabel("Voltage (V)")
-        plt.title("Mycelium UV Excitation Response")
-        plt.legend()
-        plt.grid(True)
-        plt.show()
+    # --- START EXPERIMENT (UV ON) ---
+    # Drive the pin to Ground (0V) to turn the active-low circuit ON
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_ALL_LOW)  # 0V = ON
+    dwf.FDwfDigitalIOConfigure(hdwf)
+    t_start = time.time()
 
-    finally:
-        print("Closing device safely...")
-        # Clean up: Force digital outputs off before leaving
-        dwf.FDwfDigitalIOOutputSet(hdwf, c_uint(0))
-        dwf.FDwfDigitalIOConfigure(hdwf)
-        dwf.FDwfDeviceCloseAll()
+    while True:
+        elapsed = time.time() - t_start  
 
-if __name__ == "__main__":
-    main()
+        # ── UV OFF at exactly 10s ──
+        if not uv_off_done and elapsed >= UV_ON_DURATION_SEC:
+            # Drive it HIGH to turn it off, matching the pull-up resistor
+            dwf.FDwfDigitalIOOutputSet(hdwf, DIO_PIN_MASK) # 3.3V = OFF
+            dwf.FDwfDigitalIOConfigure(hdwf)
+            uv_off_done = True
+
+        # ── Poll oscilloscope ──
+        dwf.FDwfAnalogInStatus(hdwf, c_int(1), byref(sts))
+        dwf.FDwfAnalogInStatusRecord(hdwf, byref(available), byref(lost), byref(corrupt))
+
+        if lost.value > 0:
+            print(f"\n  WARNING: {lost.value} samples lost.")
+        if corrupt.value > 0:
+            print(f"\n  WARNING: {corrupt.value} samples corrupted.")
+
+        if available.value > 0:
+            chunk = (c_double * available.value)()
+            dwf.FDwfAnalogInStatusData(hdwf, c_int(0), chunk, c_int(available.value))
+            all_samples.extend(chunk)
+
+        print(f"  t={elapsed:6.1f}s | samples={len(all_samples):7d}/{total_samples} "
+              f"| UV={'ON ' if not uv_off_done else 'OFF'}", end="\r")
+
+        # ── Exit based on wall clock, NOT oscilloscope status ──
+        # (sts == DONE can fire immediately and break the loop too early)
+        if elapsed >= TOTAL_DURATION_SEC:
+            break
+
+        time.sleep(0.02)
+
+    print(f"\nDone. {len(all_samples)} samples collected.")
+    return np.array(all_samples)
+
+# ─────────────────────────────────────────────
+# Plot
+# ─────────────────────────────────────────────
+def plot_results(samples):
+    time_axis = np.arange(len(samples)) / SAMPLE_RATE_HZ
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    # Shade UV ON window
+    ax.axvspan(0, UV_ON_DURATION_SEC, color='violet', alpha=0.15,
+               label=f'UV ON (0 – {UV_ON_DURATION_SEC:.0f}s)')
+    ax.axvline(UV_ON_DURATION_SEC, color='purple', linestyle='--',
+               linewidth=1.2, label='UV OFF')
+
+    ax.plot(time_axis, samples, color='steelblue', linewidth=0.5,
+            label='Ch1 — Mycelium voltage')
+
+    ax.set_xlabel('Time (s)', fontsize=12)
+    ax.set_ylabel('Voltage (V)', fontsize=12)
+    ax.set_title('Mycelium Electrophysiology — UV Stimulus Response', fontsize=14)
+    ax.set_xlim(0, TOTAL_DURATION_SEC)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig('mycelium_uv_response.png', dpi=150)
+    print("Plot saved → mycelium_uv_response.png")
+    plt.show()
+
+# ─────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────
+hdwf = initialize_device(dwf)
+
+try:
+    configure_dio(dwf, hdwf)
+    total_samples = configure_oscilloscope(dwf, hdwf)
+    samples = run_experiment(dwf, hdwf, total_samples)
+    plot_results(samples)
+
+except KeyboardInterrupt:
+    print("\nInterrupted by user.")
+
+finally:
+    print("\nSafety teardown...")
+    uv_off(dwf, hdwf)
+    dwf.FDwfAnalogInConfigure(hdwf, c_int(0), c_int(0))  # stop oscilloscope
+    dwf.FDwfDigitalIOOutputSet(hdwf, DIO_ALL_LOW)
+    dwf.FDwfDigitalIOConfigure(hdwf)
+    dwf.FDwfDeviceClose(hdwf)
+    print("Device closed safely.")
