@@ -218,8 +218,8 @@ else:
 # --- Configuration ---
 UV_ON_DURATION_SEC  = 10.0
 TOTAL_DURATION_SEC  = 20.0
-SAMPLE_RATE_HZ      = 1000.0   # 1 kHz — adjust if needed
-VOLTAGE_RANGE_V     = 5.0      # ±5V oscilloscope range; lower for small signals
+SAMPLE_RATE_HZ      = 1000.0   # 1 kHz
+VOLTAGE_RANGE_V     = 0.1      # ± 100µV oscilloscope range 
 DIO_PIN_MASK        = c_uint(1 << 0)   # DIO pin 0
 DIO_ALL_LOW         = c_uint(0)
 
@@ -227,13 +227,41 @@ DIO_ALL_LOW         = c_uint(0)
 ACQTYPE_RECORD  = c_int(3)
 DWF_STATE_DONE  = c_ubyte(2)
 
-# ─────────────────────────────────────────────
-# UV helpers — direct DIO control, no relay
-# ─────────────────────────────────────────────
+# UV helpers
+'''
+Background: 
+
+VIO (3.3V) ──── UV (-)
+DIO 0      ──── UV (+)
+
+Each DIO pins have internal pull-up resistors. 
+It connects each pin to VIO (3.3V) when the pin is not actively driven. 
+
+UV ON:
+
+    VIO (3.3V)
+        │
+    [pull-up resistor]   ← internal to ADP
+        │
+    DIO 0 ──── UV (+)
+                    │
+                UV light
+                    │
+                UV (-)  ──── VIO = 3.3V 
+
+UV OFF:
+
+    DIO 0 = 3.3V ──── UV (+)
+                      │
+                   UV light     ← both sides at 3.3V
+                      │
+    VIO   = 3.3V ──── UV (-)
+
+'''
 def uv_on(dwf, hdwf):
     """
-    UV ON -> Mimics 'Disconnected' (Air Gap).
-    Disables output AND forces internal hardware resistors to float (0.5).
+    Disables output and forces internal hardware resistors to float (0.5).
+
     """
     dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_ALL_LOW)  
     # 0.0 = Pull Down, 1.0 = Pull Up, 0.5 = Float
@@ -243,8 +271,8 @@ def uv_on(dwf, hdwf):
 
 def uv_off(dwf, hdwf):
     """
-    UV OFF -> Mimics 'Pressed (1)'.
     Drives the pin HIGH (3.3V).
+
     """
     if hasattr(dwf, 'FDwfDigitalIOPullSet'):
         dwf.FDwfDigitalIOPullSet(hdwf, DIO_PIN_MASK, c_double(1.0)) # Pull up to help drive
@@ -252,9 +280,8 @@ def uv_off(dwf, hdwf):
     dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK) 
     dwf.FDwfDigitalIOConfigure(hdwf)
 
-# ─────────────────────────────────────────────
+
 # Device init
-# ─────────────────────────────────────────────
 def initialize_device(dwf):
     hdwf = c_int()
     print("Opening Digilent Analog Discovery Pro...")
@@ -267,17 +294,15 @@ def initialize_device(dwf):
     print(f"Device opened (handle: {hdwf.value})")
     return hdwf
 
-# ─────────────────────────────────────────────
+
 # DIO config — just set pin 0 as output
-# ─────────────────────────────────────────────
 def configure_dio(dwf, hdwf):
     dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK)  # pin 0 = output
     uv_off(dwf, hdwf)                                      # safe initial state
     print("DIO 0 configured as output. UV OFF.")
 
-# ─────────────────────────────────────────────
+
 # Oscilloscope config — Channel 1 = mycelium
-# ─────────────────────────────────────────────
 def configure_oscilloscope(dwf, hdwf):
     total_samples = int(TOTAL_DURATION_SEC * SAMPLE_RATE_HZ)
 
@@ -291,9 +316,8 @@ def configure_oscilloscope(dwf, hdwf):
     print(f"Oscilloscope: {SAMPLE_RATE_HZ:.0f} Hz | ±{VOLTAGE_RANGE_V}V | {TOTAL_DURATION_SEC:.0f}s")
     return total_samples
 
-# ─────────────────────────────────────────────
+
 # Main loop — UV trigger + data acquisition
-# ─────────────────────────────────────────────
 def run_experiment(dwf, hdwf, total_samples):
     all_samples = []
     uv_off_done = False
@@ -312,7 +336,7 @@ def run_experiment(dwf, hdwf, total_samples):
     print("UV ON  → t = 0.0s")
     print(f"Recording for {TOTAL_DURATION_SEC:.0f}s total...\n")
 
-    # --- BEFORE THE LOOP (Initial Safe State) ---
+
     # With a pull-up resistor, driving HIGH or letting it float (Z) keeps it OFF
     dwf.FDwfDigitalIOOutputEnableSet(hdwf, DIO_PIN_MASK)
     dwf.FDwfDigitalIOOutputSet(hdwf, DIO_PIN_MASK) # 3.3V = OFF
@@ -361,9 +385,8 @@ def run_experiment(dwf, hdwf, total_samples):
     print(f"\nDone. {len(all_samples)} samples collected.")
     return np.array(all_samples)
 
-# ─────────────────────────────────────────────
+
 # Plot
-# ─────────────────────────────────────────────
 def plot_results(samples):
     time_axis = np.arange(len(samples)) / SAMPLE_RATE_HZ
 
@@ -390,9 +413,8 @@ def plot_results(samples):
     print("Plot saved → mycelium_uv_response.png")
     plt.show()
 
-# ─────────────────────────────────────────────
+
 # Entry point
-# ─────────────────────────────────────────────
 hdwf = initialize_device(dwf)
 
 try:
