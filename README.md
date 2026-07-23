@@ -17,8 +17,8 @@ The system uses a **Digilent Analog Discovery Pro (ADP)** to send precise digita
 
 ### 2. Biological Setup (Inside Faraday Box)
 * **Substrate:** One agar Petri dish containing active mycelium growth. For detailed growth manual [Mycelium on Agar substrate growth manual](Inoculation_on_agar_substrate.pdf). And One reference agar Petri dish without mycelium for GND measurements. 
-* **Active Electrode (Scope CH1):** Placed directly in the mycelium mass, targeted by the UV light beam.
-* **Reference/Ground Electrode (Scope CH1 Ground)**
+* **Active Electrode (Scope CH1 and CH3):** Placed directly in the mycelium mass, targeted by the UV light beam.
+* **Reference/Ground Electrode (Scope CH1 and Scope CH3 Ground)**
 
 
 ##  Pinout & Terminal Strip Wiring Diagram
@@ -32,18 +32,20 @@ The system uses a **Digilent Analog Discovery Pro (ADP)** to send precise digita
 
 ![alt text](IMG_6428.jpeg)
 
-
-![alt text](IMG_7040.jpeg)
-
+You can also add electrodes in different scopes for multiple electrodes recording. 
 
 ## Software & Script Logic
 
 ### Execution Workflow:
-1.  Connecting to the Digilent hardware via the WaveForms SDK (`dwf`) and sets up Analog Channels 1 & 2 to an input range.
-2. Launching the oscilloscope recording and instantly flips **DIO 0 to HIGH**, firing the UV light.
-3. Monitoring the clock in real-time. Once the trigger time elapses, forcing **DIO 0 to LOW**, cutting the UV light source.
-4. Continuing to record the mycelium's electrical recovery in total darkness for the remaining recording time. 
-5. Automatically downloading the data arrays, saving them as `.npy` binaries, and generating a time-series graph mapping the UV Pulse vs. Fungal Response.
+1. **Hardware Initialization**: Connecting to the Digilent hardware via the WaveForms SDK (dwf), arming the Analog Input Channels to the configured voltage range, and initializing DIO 0 to LOW (0V).
+
+2. **Baseline & UV Activation**: Launching oscilloscope recording to collect baseline data in the dark. Once the baseline time elapses, firing a 100 ms HIGH trigger pulse on DIO 0 (and immediately returns it to LOW) to toggle the latching UV light ON.
+
+3. **Exposure & Deactivation**: Monitorong the clock in real-time during the UV exposure window. When the exposure period ends, firing a second 100 ms HIGH trigger pulse on DIO 0 (returning to LOW) to toggle the UV light OFF.
+
+4. **Recovery Recording**: Continuing to record the mycelium's electrical recovery in total darkness for the remaining duration while DIO 0 sits idle at 0V.
+
+5. **Data Processing & Visualization**: Completing data collection, compiling the recorded streams into data arrays (saving .npy binaries), and generating a time-series graph mapping the UV Exposure Window vs. Fungal Response.
 
 
 ## How to Run the Experiment
