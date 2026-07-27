@@ -78,4 +78,4 @@ pip install numpy matplotlib
 The console will display real-time tracking updates:
 Elapsed recording time: 30 / 120 seconds...
 
-Upon completion, a Matplotlib window will automatically render your data curves, and the raw numpy binary arrays (mycelium_electrode_response.npy and uv_pulse_verification.npy) will save directly to your repository folder.
+Upon completion, a Matplotlib window will automatically render your data curves, and the raw numpy binary arrays (mycelium_ch1.npy and agar_control_ch3.npy) will save directly to your repository folder.
