@@ -54,7 +54,7 @@ dwf.FDwfGetLastErrorMsg.restype = c_int
 
 NUM_CYCLES                  = 3       # Total number of UV ON/OFF cycles
 PRE_UV_DURATION_SEC         = 100.0   # Baseline time before the 1st pulse (s)
-UV_ON_DURATION_SEC          = 20.0    # Duration light stays ON per cycle (s)
+UV_ON_DURATION_SEC          = 10.0    # Duration light stays ON per cycle (s)
 CYCLE_INTERVAL_SEC          = 120.0   # Pause/recovery time between pulses (2 mins)
 POST_EXPERIMENT_DURATION_SEC= 200.0   # Final recovery baseline after last pulse (s)
 
