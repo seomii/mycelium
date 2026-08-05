@@ -52,14 +52,16 @@ dwf.FDwfGetLastErrorMsg.restype = c_int
 
 # Experimental Parameters
 
-NUM_CYCLES                  = 3       # Total number of UV ON/OFF cycles
-PRE_UV_DURATION_SEC         = 100.0   # Baseline time before the 1st pulse (s)
-UV_ON_DURATION_SEC          = 10.0    # Duration light stays ON per cycle (s)
-CYCLE_INTERVAL_SEC          = 120.0   # Pause/recovery time between pulses (2 mins)
-POST_EXPERIMENT_DURATION_SEC= 200.0   # Final recovery baseline after last pulse (s)
+NUM_CYCLES                  = 30      # Total number of UV ON/OFF cycles
+PRE_UV_DURATION_SEC         = 90.0    # Baseline time before the 1st pulse (s)
+UV_ON_DURATION_SEC          = 60.0    # Duration light stays ON per cycle (s)
+CYCLE_INTERVAL_SEC          = 180.0   # Pause/recovery time between pulses (3 mins)
+POST_EXPERIMENT_DURATION_SEC= 90.0    # Final recovery baseline after last pulse (s)
 
-SAMPLE_RATE_HZ              = 10.0    # 10 Hz sampling rate
-VOLTAGE_RANGE_V             = 1.0     # ± 1000mV range
+SAMPLE_RATE_HZ              = 100.0   # 100 Hz sampling rate
+VOLTAGE_RANGE_V             = 0.25    # ± 250mV range
+
+AUTOSAVE_INTERVAL_SEC       = 60.0    # Time-based disk autosave frequency (s)
 
 # Channel Mapping
 CH_TARGET_INDEX             = 0       # Mycelium Plate (Channel 1)
@@ -77,7 +79,6 @@ for i in range(NUM_CYCLES):
     UV_CYCLES.append((t_on, t_off))
 
 TOTAL_DURATION_SEC = UV_CYCLES[-1][1] + POST_EXPERIMENT_DURATION_SEC
-
 
 
 # Pulse Trigger Functions 
@@ -146,16 +147,31 @@ def configure_oscilloscope(dwf, hdwf):
     return total_samples
 
 
+# Data Export & Multi-Cycle Plotting
 
-# Execution Loop
+def save_data_arrays(samples_ch1, samples_ch3, is_autosave=False):
+    """Saves raw numpy arrays to disk."""
+    ch1_arr = np.array(samples_ch1)
+    ch3_arr = np.array(samples_ch3)
+    
+    np.save("mycelium_ch1.npy", ch1_arr)
+    np.save("agar_control_ch3.npy", ch3_arr)
+    
+    if not is_autosave:
+        print("\nData saved successfully:")
+        print("  └─ Mycelium Stream:      mycelium_ch1.npy")
+        print("  └─ Agar Control Stream:  agar_control_ch3.npy")
+
+
+# Execution Loop with Periodic Autosave
 
 def run_experiment(dwf, hdwf, total_samples):
     all_samples_ch1 = []
     all_samples_ch3 = []
     
-    # Flags to track ON and OFF triggers for each cycle
-    cycle_on_done  = [False] * NUM_CYCLES
-    cycle_off_done = [False] * NUM_CYCLES
+    # Flags to track ON, OFF, and Autosave for each cycle
+    cycle_on_done   = [False] * NUM_CYCLES
+    cycle_off_done  = [False] * NUM_CYCLES
     
     available   = c_int()
     lost        = c_int()
@@ -166,6 +182,8 @@ def run_experiment(dwf, hdwf, total_samples):
     time.sleep(1.0)
 
     t_start = time.time()
+    t_last_autosave = t_start
+
     print(f"\nExperiment started → t = 0.0s ({NUM_CYCLES} UV Cycles scheduled)")
     for i, (t_on, t_off) in enumerate(UV_CYCLES):
         print(f"  └─ Cycle {i+1}: ON at {t_on:.1f}s | OFF at {t_off:.1f}s")
@@ -184,6 +202,11 @@ def run_experiment(dwf, hdwf, total_samples):
                 uv_toggle_off(dwf, hdwf)
                 cycle_off_done[i] = True
                 print(f"\n>>> SENT OFF PULSE (Cycle {i+1}/{NUM_CYCLES}) → t = {elapsed:.1f}s (UV Light OFF) <<<")
+                
+                # Autosave immediately after every cycle completes
+                if len(all_samples_ch1) > 0:
+                    save_data_arrays(all_samples_ch1, all_samples_ch3, is_autosave=True)
+                    print(f"  [Disk Autosave] Saved Cycle {i+1} data ({len(all_samples_ch1)} samples)")
 
         # Stream Oscilloscope Buffer
         dwf.FDwfAnalogInStatus(hdwf, c_int(1), byref(sts))
@@ -197,31 +220,26 @@ def run_experiment(dwf, hdwf, total_samples):
             all_samples_ch1.extend(chunk1)
             all_samples_ch3.extend(chunk3)
 
+        # Periodic time-based autosave (e.g. every 60 seconds)
+        if (time.time() - t_last_autosave) >= AUTOSAVE_INTERVAL_SEC:
+            if len(all_samples_ch1) > 0:
+                save_data_arrays(all_samples_ch1, all_samples_ch3, is_autosave=True)
+            t_last_autosave = time.time()
+
         # Check if UV light is currently active
         is_uv_active = any(cycle_on_done[i] and not cycle_off_done[i] for i in range(NUM_CYCLES))
         phase = "ON" if is_uv_active else "OFF"
         
-        print(f"  t={elapsed:6.1f}s | samples={len(all_samples_ch1):5d}/{total_samples} | UV State={phase}  ", end="\r")
+        print(f"  t={elapsed:6.1f}s | samples={len(all_samples_ch1):6d}/{total_samples} | UV State={phase}  ", end="\r")
 
         if elapsed >= TOTAL_DURATION_SEC:
             break
 
-        time.sleep(0.02)
+        time.sleep(0.005)
 
     print(f"\nData collection complete. {len(all_samples_ch1)} samples collected per channel.")
     return np.array(all_samples_ch1), np.array(all_samples_ch3)
 
-
-
-# Data Export & Multi-Cycle Plotting
-
-def save_data_arrays(samples_ch1, samples_ch3):
-    """Saves raw numpy arrays for offline analysis."""
-    np.save("mycelium_ch1.npy", samples_ch1)
-    np.save("agar_control_ch3.npy", samples_ch3)
-    print("\nData saved successfully:")
-    print("  └─ Mycelium Stream:      mycelium_ch1.npy")
-    print("  └─ Agar Control Stream:  agar_control_ch3.npy")
 
 def plot_results(samples_ch1, samples_ch3):
     n = min(len(samples_ch1), len(samples_ch3))
@@ -261,11 +279,11 @@ def plot_results(samples_ch1, samples_ch3):
     plt.show()
 
 
-
 # Execution Block
 
 if __name__ == "__main__":
     hdwf = initialize_device(dwf)
+    samples_ch1, samples_ch3 = [], []
 
     try:
         configure_dio(dwf, hdwf)
@@ -274,14 +292,23 @@ if __name__ == "__main__":
         # 1. Collect Data
         samples_ch1, samples_ch3 = run_experiment(dwf, hdwf, total_samples)
         
-        # 2. Save .npy Binaries
+        # 2. Final Save
         save_data_arrays(samples_ch1, samples_ch3)
         
         # 3. Plot & Save Graph
         plot_results(samples_ch1, samples_ch3)
 
     except KeyboardInterrupt:
-        print("\nScript interrupted by user.")
+        print("\n\nScript interrupted by user.")
+        if len(samples_ch1) > 0:
+            print("Saving partial data to disk before exit...")
+            save_data_arrays(samples_ch1, samples_ch3, is_autosave=True)
+
+    except Exception as e:
+        print(f"\n\nUnexpected error: {e}")
+        if len(samples_ch1) > 0:
+            print("Emergency autosave executed...")
+            save_data_arrays(samples_ch1, samples_ch3, is_autosave=True)
 
     finally:
         print("\nExecuting safe teardown...")
