@@ -65,7 +65,6 @@ AUTOSAVE_INTERVAL_SEC       = 60.0    # Time-based disk autosave frequency (s)
 
 # Channel Mapping
 CH_TARGET_INDEX             = 0       # Mycelium Plate (Channel 1)
-CH_CONTROL_INDEX            = 2       # Pure Agar Control Plate (Channel 3)
 
 DIO_PIN_MASK                = c_uint(1 << 0)   # DIO 0 (Bit 0)
 DIO_ALL_LOW                 = c_uint(0)
@@ -134,11 +133,6 @@ def configure_oscilloscope(dwf, hdwf):
     dwf.FDwfAnalogInChannelRangeSet(hdwf,   c_int(CH_TARGET_INDEX), c_double(VOLTAGE_RANGE_V))
     dwf.FDwfAnalogInChannelOffsetSet(hdwf,  c_int(CH_TARGET_INDEX), c_double(0.0))
 
-    # Configure Control Channel (Index 2 / Channel 3)
-    dwf.FDwfAnalogInChannelEnableSet(hdwf,  c_int(CH_CONTROL_INDEX), c_int(1))               
-    dwf.FDwfAnalogInChannelRangeSet(hdwf,   c_int(CH_CONTROL_INDEX), c_double(VOLTAGE_RANGE_V))
-    dwf.FDwfAnalogInChannelOffsetSet(hdwf,  c_int(CH_CONTROL_INDEX), c_double(0.0))
-
     dwf.FDwfAnalogInFrequencySet(hdwf,      c_double(SAMPLE_RATE_HZ))
     dwf.FDwfAnalogInAcquisitionModeSet(hdwf, ACQTYPE_RECORD)
     dwf.FDwfAnalogInRecordLengthSet(hdwf,   c_double(TOTAL_DURATION_SEC))
@@ -147,27 +141,22 @@ def configure_oscilloscope(dwf, hdwf):
     return total_samples
 
 
-# Data Export & Multi-Cycle Plotting
+# Data Export & Plotting
 
-def save_data_arrays(samples_ch1, samples_ch3, is_autosave=False):
-    """Saves raw numpy arrays to disk."""
+def save_data_arrays(samples_ch1, is_autosave=False):
+    """Saves raw numpy array for Channel 1 to disk."""
     ch1_arr = np.array(samples_ch1)
-    ch3_arr = np.array(samples_ch3)
-    
     np.save("mycelium_ch1.npy", ch1_arr)
-    np.save("agar_control_ch3.npy", ch3_arr)
     
     if not is_autosave:
         print("\nData saved successfully:")
-        print("  └─ Mycelium Stream:      mycelium_ch1.npy")
-        print("  └─ Agar Control Stream:  agar_control_ch3.npy")
+        print("  └─ Mycelium Stream: mycelium_ch1.npy")
 
 
 # Execution Loop with Periodic Autosave
 
 def run_experiment(dwf, hdwf, total_samples):
     all_samples_ch1 = []
-    all_samples_ch3 = []
     
     # Flags to track ON, OFF, and Autosave for each cycle
     cycle_on_done   = [False] * NUM_CYCLES
@@ -205,7 +194,7 @@ def run_experiment(dwf, hdwf, total_samples):
                 
                 # Autosave immediately after every cycle completes
                 if len(all_samples_ch1) > 0:
-                    save_data_arrays(all_samples_ch1, all_samples_ch3, is_autosave=True)
+                    save_data_arrays(all_samples_ch1, is_autosave=True)
                     print(f"  [Disk Autosave] Saved Cycle {i+1} data ({len(all_samples_ch1)} samples)")
 
         # Stream Oscilloscope Buffer
@@ -214,16 +203,13 @@ def run_experiment(dwf, hdwf, total_samples):
 
         if available.value > 0:
             chunk1 = (c_double * available.value)()
-            chunk3 = (c_double * available.value)()
             dwf.FDwfAnalogInStatusData(hdwf, c_int(CH_TARGET_INDEX), chunk1, c_int(available.value))
-            dwf.FDwfAnalogInStatusData(hdwf, c_int(CH_CONTROL_INDEX), chunk3, c_int(available.value))
             all_samples_ch1.extend(chunk1)
-            all_samples_ch3.extend(chunk3)
 
         # Periodic time-based autosave (e.g. every 60 seconds)
         if (time.time() - t_last_autosave) >= AUTOSAVE_INTERVAL_SEC:
             if len(all_samples_ch1) > 0:
-                save_data_arrays(all_samples_ch1, all_samples_ch3, is_autosave=True)
+                save_data_arrays(all_samples_ch1, is_autosave=True)
             t_last_autosave = time.time()
 
         # Check if UV light is currently active
@@ -237,41 +223,36 @@ def run_experiment(dwf, hdwf, total_samples):
 
         time.sleep(0.005)
 
-    print(f"\nData collection complete. {len(all_samples_ch1)} samples collected per channel.")
-    return np.array(all_samples_ch1), np.array(all_samples_ch3)
+    print(f"\nData collection complete. {len(all_samples_ch1)} samples collected.")
+    return np.array(all_samples_ch1)
 
 
-def plot_results(samples_ch1, samples_ch3):
-    n = min(len(samples_ch1), len(samples_ch3))
+def plot_results(samples_ch1):
+    n = len(samples_ch1)
     time_axis = np.arange(n) / SAMPLE_RATE_HZ
 
     # Convert Volts (V) to Millivolts (mV)
-    ch1_mv = samples_ch1[:n] * 1000.0
-    ch3_mv = samples_ch3[:n] * 1000.0
+    ch1_mv = samples_ch1 * 1000.0
 
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-    labels = ['Channel 1 — Mycelium Response', 'Channel 3 — Pure Agar Control']
-    colors = ['#1f77b4', '#ff7f0e']
+    fig, ax = plt.subplots(figsize=(14, 5))
 
-    for ax, samples, label, color in zip(axes, [ch1_mv, ch3_mv], labels, colors):
-        # Draw shaded spans and markers for all UV stimulation cycles
-        for i, (t_on, t_off) in enumerate(UV_CYCLES):
-            span_label = f'UV Exposure ({UV_ON_DURATION_SEC:.0f}s)' if i == 0 else None
-            on_label   = 'UV ON Pulse' if i == 0 else None
-            off_label  = 'UV OFF Pulse' if i == 0 else None
+    # Draw shaded spans and markers for all UV stimulation cycles
+    for i, (t_on, t_off) in enumerate(UV_CYCLES):
+        span_label = f'UV Exposure ({UV_ON_DURATION_SEC:.0f}s)' if i == 0 else None
+        on_label   = 'UV ON Pulse' if i == 0 else None
+        off_label  = 'UV OFF Pulse' if i == 0 else None
 
-            ax.axvspan(t_on, t_off, color='violet', alpha=0.2, label=span_label)
-            ax.axvline(t_on, color='purple', linestyle='--', linewidth=1.2, label=on_label)
-            ax.axvline(t_off, color='purple', linestyle=':', linewidth=1.2, label=off_label)
+        ax.axvspan(t_on, t_off, color='violet', alpha=0.2, label=span_label)
+        ax.axvline(t_on, color='purple', linestyle='--', linewidth=1.2, label=on_label)
+        ax.axvline(t_off, color='purple', linestyle=':', linewidth=1.2, label=off_label)
 
-        ax.plot(time_axis, samples, color=color, linewidth=0.8, label=label)
-        ax.set_ylabel('Voltage (mV)', fontsize=11)
-        ax.legend(loc='upper right', fontsize=9)
-        ax.grid(True, alpha=0.3)
-
-    axes[0].set_title(f'Mycelium Multi-Cycle UV Response ({NUM_CYCLES} Cycles)', fontsize=13)
-    axes[-1].set_xlabel('Time (s)', fontsize=11)
-    axes[-1].set_xlim(0, TOTAL_DURATION_SEC)
+    ax.plot(time_axis, ch1_mv, color='#1f77b4', linewidth=0.8, label='Channel 1 — Mycelium Response')
+    ax.set_ylabel('Voltage (mV)', fontsize=11)
+    ax.set_xlabel('Time (s)', fontsize=11)
+    ax.set_xlim(0, TOTAL_DURATION_SEC)
+    ax.set_title(f'Mycelium Multi-Cycle UV Response ({NUM_CYCLES} Cycles)', fontsize=13)
+    ax.legend(loc='upper right', fontsize=9)
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig('mycelium_uv_response.png', dpi=150)
@@ -283,32 +264,32 @@ def plot_results(samples_ch1, samples_ch3):
 
 if __name__ == "__main__":
     hdwf = initialize_device(dwf)
-    samples_ch1, samples_ch3 = [], []
+    samples_ch1 = []
 
     try:
         configure_dio(dwf, hdwf)
         total_samples = configure_oscilloscope(dwf, hdwf)
         
         # 1. Collect Data
-        samples_ch1, samples_ch3 = run_experiment(dwf, hdwf, total_samples)
+        samples_ch1 = run_experiment(dwf, hdwf, total_samples)
         
         # 2. Final Save
-        save_data_arrays(samples_ch1, samples_ch3)
+        save_data_arrays(samples_ch1)
         
         # 3. Plot & Save Graph
-        plot_results(samples_ch1, samples_ch3)
+        plot_results(samples_ch1)
 
     except KeyboardInterrupt:
         print("\n\nScript interrupted by user.")
         if len(samples_ch1) > 0:
             print("Saving partial data to disk before exit...")
-            save_data_arrays(samples_ch1, samples_ch3, is_autosave=True)
+            save_data_arrays(samples_ch1, is_autosave=True)
 
     except Exception as e:
         print(f"\n\nUnexpected error: {e}")
         if len(samples_ch1) > 0:
             print("Emergency autosave executed...")
-            save_data_arrays(samples_ch1, samples_ch3, is_autosave=True)
+            save_data_arrays(samples_ch1, is_autosave=True)
 
     finally:
         print("\nExecuting safe teardown...")
